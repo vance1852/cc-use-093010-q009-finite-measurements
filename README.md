@@ -39,3 +39,25 @@
     PYTHONPATH=src python3 -m metric_quality.api --database metric-quality.sqlite3 --host 127.0.0.1 --port 8082
 
 服务提供 JSON 接口与健康检查。进程重启后可以继续读取 SQLite 中的业务状态和审计历史。
+
+## 统计测量的写入边界数值契约
+
+`metric_quality` 服务在测量记录进入业务表和审计链之前强制执行数值契约
+（规则版本 `metric-measurement-contract-1.0.0`，见 `src/metric_quality/contracts.py`），
+对观测期（`test_frequency_hz`）、指标值（`response`）、偏差（`noise`）、
+来源身份（`instrument`）和观测身份（`observation_key`）统一校验：
+
+- 请求体使用严格 JSON 解析：`Infinity`/`-Infinity`/`NaN` 与重复键在解析边界即被拒绝；
+- 数值字段不接受字符串伪装（`"0.93"`、`"Infinity"`）、布尔值，且必须落在适用量程内；
+- 同一观测身份的冲突重放被拒绝；内容一致的重放幂等返回；
+- 单条与批量写入都在单个事务内完成，任一条非法则整批回滚，业务表和审计链均不被污染；
+- 契约失败返回 `422`，并在 `error.rejections` 中给出每条记录的具体字段（`field`）、
+  规则代码（`rule`）和可读说明，报送方在写入时即可定位问题。
+
+契约建立前入库的存量记录不会在读取时被悄悄忽略：启动迁移时旧记录进入
+`validity='quarantined'` 待甄别状态，`POST /quarantine/scan` 重新套用规则，
+识别出的非有限数值、伪装类型和超量程记录写入 `measurement_quarantine` 隔离台账，
+登记命中规则、规则版本、处置人和处置时间。命中数值/来源规则的记录只能 `purge`
+剔除，不能人工放行；仅缺契约版本但数值合规的旧记录可由质量角色复核后 `release`。
+后续分析（`/lots/{id}/analysis`）只消费 `validity='valid'` 且带契约版本的
+可追溯观测，有效观测不足时直接报错而不是产出受污染的结论。

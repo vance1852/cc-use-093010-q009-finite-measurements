@@ -9,13 +9,15 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .errors import Forbidden
+
 
 ROLES = {"operator", "engineer", "quality", "admin"}
 PERMISSIONS = {
     "operator": {"read", "measure"},
     "engineer": {"read", "measure", "analyze", "submit"},
-    "quality": {"read", "measure", "analyze", "approve", "release"},
-    "admin": {"read", "measure", "analyze", "submit", "approve", "release", "admin"},
+    "quality": {"read", "measure", "analyze", "approve", "release", "quarantine"},
+    "admin": {"read", "measure", "analyze", "submit", "approve", "release", "quarantine", "admin"},
 }
 
 
@@ -53,7 +55,7 @@ class Auth:
     def login(self, user_id: str, password: str) -> str:
         row = self.db.execute("SELECT role,salt,password_hash,active FROM users WHERE user_id=?", (user_id,)).fetchone()
         if not row or not row[3] or not hmac.compare_digest(_hash(password, row[1]), row[2]):
-            raise PermissionError("invalid credentials")
+            raise Forbidden("invalid credentials")
         token = secrets.token_urlsafe(24)
         self.db.execute("INSERT INTO sessions VALUES(?,?,datetime('now','+8 hours'),1)", (token, user_id))
         self.db.commit()
@@ -64,13 +66,13 @@ class Auth:
             FROM sessions s JOIN users u ON u.user_id=s.user_id
             WHERE s.token=?""", (token,)).fetchone()
         if not row or not row[2] or not row[3] or datetime.fromisoformat(row[4]).replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-            raise PermissionError("session expired")
+            raise Forbidden("session expired")
         return User(row[0], row[1], True)
 
     def require(self, token: str, permission: str) -> User:
         user = self.current(token)
         if permission not in PERMISSIONS[user.role]:
-            raise PermissionError("permission denied")
+            raise Forbidden("permission denied")
         return user
 
     def deactivate(self, user_id: str) -> None:
